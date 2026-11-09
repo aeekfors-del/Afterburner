@@ -293,9 +293,9 @@ class NotificationManager(QObject):
         self._show_notification(message, severity)
 
     def _show_notification(self, message: str, severity: str) -> None:
-        """Show Windows toast notification via PowerShell."""
+        """Show Windows toast notification via plyer."""
         try:
-            import subprocess
+            from plyer import notification
 
             if severity == "critical":
                 title = "CRITICAL - Afterburner"
@@ -304,17 +304,11 @@ class NotificationManager(QObject):
             else:
                 title = "Afterburner"
 
-            ps_script = (
-                "Add-Type -AssemblyName System.Windows.Forms; "
-                "$toast = [System.Windows.Forms.ToastNotificationManager]::"
-                "CreateToastNotifier('Afterburner'); "
-                "$text = '" + title + "\\n" + message + "'; "
-                "$toast.Show($text)"
-            )
-            subprocess.run(
-                ["powershell", "-Command", ps_script],
-                capture_output=True,
-                timeout=5,
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="Afterburner",
+                timeout=10,  # seconds
             )
         except Exception:
             logger.warning("Failed to show notification", exc_info=True)

@@ -7,6 +7,7 @@ Handles loading, saving, and managing application settings.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -18,7 +19,8 @@ logger = logging.getLogger("Afterburner.config")
 # PATHS & DEFAULTS
 # ============================================================
 
-CONFIG_PATH = Path.home() / ".afterburner_config.json"
+APPDATA = os.getenv("APPDATA", str(Path.home()))
+CONFIG_PATH = Path(APPDATA) / "Afterburner" / "config.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "update_interval_ms": 1000,

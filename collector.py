@@ -168,10 +168,15 @@ class DataCollectorThread(QThread):
 
     def _collect_gpu(self, data: SystemData) -> None:
         """Collect GPU info using NVML or WMI."""
+        logger.debug("Collecting GPU metrics...")
+
         # Method 1: NVML via pynvml (NVIDIA)
         try:
+            logger.debug("Attempting NVML init...")
             pynvml.nvmlInit()
             device_count = pynvml.nvmlDeviceGetCount()
+            logger.debug(f"NVML devices found: {device_count}")
+
             if device_count > 0:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                 data.gpu_name = pynvml.nvmlDeviceGetName(handle)
@@ -186,11 +191,23 @@ class DataCollectorThread(QThread):
                     pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
                 )
                 pynvml.nvmlShutdown()
+                logger.info(
+                    "GPU [NVML]: %s | usage=%.1f%% temp=%.0fC power=%.0fW",
+                    data.gpu_name,
+                    data.gpu_usage,
+                    data.gpu_temp,
+                    data.gpu_power,
+                )
                 return
-        except Exception:
-            pass
 
-        # Method 2: WMI fallback
+            logger.debug("NVML init OK but no devices found, trying WMI fallback...")
+
+        except Exception as exc:
+            logger.warning(
+                "NVML failed (%s), falling back to WMI", type(exc).__name__
+            )
+
+        # Method 2: WMI fallback (AMD / Intel / generic)
         if self._wmi:
             try:
                 for gpu in self._wmi.Win32_VideoController():
@@ -198,6 +215,11 @@ class DataCollectorThread(QThread):
                         data.gpu_name = gpu.Name
                     if hasattr(gpu, "AdapterRAM") and gpu.AdapterRAM:
                         data.gpu_mem_total = gpu.AdapterRAM / (1024 ** 2)
+                logger.info(
+                    "GPU [WMI VideoController]: %s | VRAM=%.0f MB",
+                    data.gpu_name,
+                    data.gpu_mem_total,
+                )
             except Exception:
                 logger.warning("Failed to collect GPU info via WMI", exc_info=True)
 
@@ -205,8 +227,14 @@ class DataCollectorThread(QThread):
                 for gpu in self._wmi.Win32_PerfFormattedData_AdapterVideo():
                     if hasattr(gpu, "PercentIdleTime"):
                         data.gpu_usage = max(0.0, 100.0 - gpu.PercentIdleTime)
+                logger.info(
+                    "GPU [WMI PerfData]: usage=%.1f%%",
+                    data.gpu_usage,
+                )
             except Exception:
                 logger.warning("Failed to collect GPU usage via WMI", exc_info=True)
+        else:
+            logger.warning("WMI not available — GPU metrics will be zero")
 
     def _collect_ram(self, data: SystemData) -> None:
         """Collect RAM metrics."""

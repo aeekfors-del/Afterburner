@@ -1,5 +1,5 @@
 psutil>=5.9.0
 PyQt6>=6.5.0
+nvidia-ml-py>=12.535.77
 pywin32>=306
-GPUtil; sys_platform == 'win32'
 pillow>=10.0.0

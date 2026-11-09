@@ -14,7 +14,7 @@ pyinstaller --onefile ^
     --name "Afterburner" ^
     --icon NONE ^
     --add-data "requirements.txt;." ^
-    monitor.py
+    main.py
 echo.
 echo Build complete! Check the 'dist' folder.
 pause

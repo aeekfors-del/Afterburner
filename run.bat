@@ -9,5 +9,5 @@ pip install -r requirements.txt
 echo.
 echo Starting Afterburner...
 echo.
-python monitor.py
+python main.py
 pause

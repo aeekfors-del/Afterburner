@@ -12,7 +12,10 @@ echo Building executable...
 pyinstaller --onefile ^
     --windowed ^
     --name "Afterburner" ^
-    --icon NONE ^
+    --hidden-import config ^
+    --hidden-import collector ^
+    --hidden-import ui_widgets ^
+    --hidden-import plyer ^
     --add-data "requirements.txt;." ^
     main.py
 echo.

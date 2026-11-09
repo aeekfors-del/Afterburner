@@ -72,13 +72,7 @@ class SystemTrayIcon(QSystemTrayIcon):
 
     def _create_icon(self):
         """Create a visible icon programmatically."""
-        # Try to load from file first
-        icon_path = "icon.png"
-        if os.path.exists(icon_path):
-            self.setIcon(QIcon(icon_path))
-            return
-
-        # Fallback: create a simple colored icon
+        # Always create programmatic icon — file icon is unreliable
         self._set_programmatic_icon()
 
     def _set_programmatic_icon(self):
@@ -87,20 +81,21 @@ class SystemTrayIcon(QSystemTrayIcon):
 
         size = 64
         pixmap = QPixmap(size, size)
-        pixmap.fill(QColor("#0a0e17"))
+        # Solid red background for maximum visibility
+        pixmap.fill(QColor("#ef4444"))
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Outer circle
-        painter.setPen(QPen(QColor("#06b6d4"), 3))
-        painter.setBrush(QColor("#0a0e17"))
+        # White circle outline
+        painter.setPen(QPen(QColor("#ffffff"), 3))
+        painter.setBrush(QColor("#ef4444"))
         painter.drawEllipse(3, 3, size - 6, size - 6)
 
-        # Letter "A"
-        font = QFont("Arial", 32, QFont.Weight.Bold)
+        # Bold white letter "A"
+        font = QFont("Arial", 36, QFont.Weight.Bold)
         painter.setFont(font)
-        painter.setPen(QColor("#06b6d4"))
+        painter.setPen(QColor("#ffffff"))
         painter.drawText(
             QRectF(0, 0, size, size),
             Qt.AlignmentFlag.AlignCenter,
@@ -195,10 +190,17 @@ class PopupWidget(QWidget):
         self.setWindowTitle("Afterburner")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool |
-            Qt.WindowType.WindowStaysOnTopHint
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.CustomizeWindowHint
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # Solid background for visibility
+        self.setStyleSheet(
+            "PopupWidget { "
+            "   background: #0a0e17; "
+            "   border: 2px solid #06b6d4; "
+            "   border-radius: 12px; "
+            "}"
+        )
 
         # Main layout
         main_layout = QVBoxLayout(self)
@@ -340,14 +342,22 @@ def _show_popup_tray(tray):
     logger.info("Showing popup window via QTimer...")
     try:
         popup = tray._popup_widget
+        logger.info(f"Popup widget: {popup is not None}")
         # Center on primary screen
         screen = QApplication.primaryScreen().geometry()
+        logger.info(f"Screen: {screen.width()}x{screen.height()}")
+        logger.info(f"Popup size: {popup.width()}x{popup.height()}")
         x = (screen.width() - popup.width()) // 2
         y = (screen.height() - popup.height()) // 2
+        logger.info(f"Moving to ({x}, {y})")
         popup.move(x, y)
         popup.show()
+        # Process events to ensure window is shown
+        QApplication.processEvents()
+        logger.info(f"Popup show called, isVisible: {popup.isVisible()}")
         popup.raise_()
         popup.activateWindow()
+        QApplication.processEvents()
         logger.info(f"Popup shown at ({x}, {y}), visible: {popup.isVisible()}")
     except Exception as e:
         logger.error(f"Failed to show popup: {e}", exc_info=True)
@@ -452,14 +462,13 @@ def main():
         logger.error(f"Failed to initialize AlertChecker: {e}", exc_info=True)
         raise
 
-    # Show initial popup if configured (disabled during dev for tray debugging)
+    # Show initial popup immediately
     if config.get("show_popup_on_click", True):
-        logger.info("Showing popup window after 1s delay...")
+        logger.info("Showing popup window immediately...")
         try:
-            # Small delay to ensure tray icon appears first
-            QTimer.singleShot(1000, lambda: _show_popup_tray(tray))
+            _show_popup_tray(tray)
         except Exception as e:
-            logger.error(f"Failed to schedule popup: {e}", exc_info=True)
+            logger.error(f"Failed to show popup: {e}", exc_info=True)
     else:
         logger.info("Popup auto-show disabled (tray only mode)")
 

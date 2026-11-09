@@ -5,6 +5,7 @@ Afterburner - System Monitor Service
 Main entry point with system tray and popup window.
 """
 
+import atexit
 import logging
 import sys
 import time
@@ -21,6 +22,23 @@ from collector import DataCollectorThread, SystemData, AlertChecker, Notificatio
 from ui_widgets import CircularGaugeWidget, SparklineWidget, InfoCardWidget, MainChartWidget
 
 logger = logging.getLogger("Afterburner.main")
+
+# Module-level reference for cleanup
+_collector = None
+
+
+def cleanup():
+    """Gracefully stop background threads on exit."""
+    global _collector
+    try:
+        if _collector is not None:
+            _collector.stop()
+            logger.info("Collector stopped gracefully")
+    except Exception:
+        logger.warning("Cleanup error", exc_info=True)
+
+
+atexit.register(cleanup)
 
 
 # ============================================================
@@ -364,9 +382,10 @@ def main():
     # Create data collector
     logger.info("Creating DataCollectorThread...")
     try:
-        collector = DataCollectorThread()
-        collector.start()
-        logger.info(f"Collector started, thread ID: {collector.thread()}")
+        global _collector
+        _collector = DataCollectorThread()
+        _collector.start()
+        logger.info(f"Collector started, thread ID: {_collector.thread()}")
     except Exception as e:
         logger.error(f"Failed to create collector: {e}", exc_info=True)
         raise
@@ -401,7 +420,7 @@ def main():
     # Connect collector to popup
     logger.info("Connecting collector to popup widget...")
     try:
-        tray.set_collector(collector)
+        tray.set_collector(_collector)
         logger.info("Collector connected successfully")
     except Exception as e:
         logger.error(f"Failed to connect collector: {e}", exc_info=True)
@@ -413,7 +432,7 @@ def main():
         notif_manager = NotificationManager()
         alert_checker = AlertChecker(notif_manager)
         alert_checker.alert_triggered.connect(_on_alert_triggered)
-        collector.data_updated.connect(alert_checker.check)
+        _collector.data_updated.connect(alert_checker.check)
         logger.info("AlertChecker initialized, threshold monitoring active")
         logger.info(f"Thresholds: cpu_temp_warn={thresholds['cpu_temp_warn']}°C, "
                      f"gpu_temp_warn={thresholds['gpu_temp_warn']}°C, "

@@ -395,6 +395,7 @@ def main():
         app = QApplication(sys.argv)
         app.setApplicationName("Afterburner")
         app.setOrganizationName("Afterburner")
+        app.setQuitOnLastWindowClosed(False)  # Keep alive when popup closes
         logger.info("QApplication created successfully")
     except Exception as e:
         logger.error(f"Failed to create QApplication: {e}", exc_info=True)

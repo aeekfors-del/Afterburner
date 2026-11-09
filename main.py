@@ -304,31 +304,80 @@ class PopupWidget(QWidget):
 def main():
     """Main entry point."""
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    # Load configuration
-    load_config()
+    logger.info("=" * 60)
+    logger.info("Afterburner starting...")
+    logger.info("=" * 60)
 
-    app = QApplication(sys.argv)
-    app.setApplicationName("Afterburner")
-    app.setOrganizationName("Afterburner")
+    # Load configuration
+    logger.info("Loading configuration...")
+    try:
+        load_config()
+        logger.info(f"Config loaded: update_interval={config.get('update_interval_ms')}ms")
+        logger.info(f"Thresholds: cpu_temp_warn={thresholds['cpu_temp_warn']}°C")
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}", exc_info=True)
+        raise
+
+    # Create Qt application
+    logger.info("Creating QApplication...")
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("Afterburner")
+        app.setOrganizationName("Afterburner")
+        logger.info("QApplication created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create QApplication: {e}", exc_info=True)
+        raise
 
     # Create data collector
-    collector = DataCollectorThread()
-    collector.start()
+    logger.info("Creating DataCollectorThread...")
+    try:
+        collector = DataCollectorThread()
+        collector.start()
+        logger.info(f"Collector started, thread ID: {collector.thread()}")
+    except Exception as e:
+        logger.error(f"Failed to create collector: {e}", exc_info=True)
+        raise
 
     # Create tray icon
-    tray = SystemTrayIcon()
-    tray.set_collector(collector)
+    logger.info("Creating SystemTrayIcon...")
+    try:
+        tray = SystemTrayIcon()
+        logger.info("SystemTrayIcon created, popup_widget exists:", tray._popup_widget is not None)
+    except Exception as e:
+        logger.error(f"Failed to create tray icon: {e}", exc_info=True)
+        raise
+
+    # Connect collector to popup
+    logger.info("Connecting collector to popup widget...")
+    try:
+        tray.set_collector(collector)
+        logger.info("Collector connected successfully")
+    except Exception as e:
+        logger.error(f"Failed to connect collector: {e}", exc_info=True)
+        raise
 
     # Show initial popup if configured
     if config.get("show_popup_on_click", True):
-        tray._toggle_popup()
+        logger.info("Showing popup window...")
+        try:
+            tray._toggle_popup()
+            logger.info("Popup shown, visible:", tray._popup_widget.isVisible())
+        except Exception as e:
+            logger.error(f"Failed to show popup: {e}", exc_info=True)
+            raise
+    else:
+        logger.info("Popup auto-show disabled (tray only mode)")
 
-    logger.info("Afterburner started")
+    logger.info("=" * 60)
+    logger.info("Afterburner started successfully!")
+    logger.info("Check system tray for icon")
+    logger.info("=" * 60)
 
     # Start application event loop
     sys.exit(app.exec())

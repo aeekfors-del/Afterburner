@@ -321,25 +321,20 @@ class NotificationManager(QObject):
         self._show_notification(message, severity)
 
     def _show_notification(self, message: str, severity: str) -> None:
-        """Show Windows toast notification via plyer."""
+        """Show Windows toast notification."""
         try:
-            from plyer import notification
+            from win10toast import ToastNotifier
+            toaster = ToastNotifier()
 
-            if severity == "critical":
-                title = "CRITICAL - Afterburner"
-            elif severity == "warning":
-                title = "WARNING - Afterburner"
-            else:
-                title = "Afterburner"
-
-            notification.notify(
-                title=title,
-                message=message,
-                app_name="Afterburner",
-                timeout=10,  # seconds
+            title = "🚨 CRITICAL" if severity == "critical" else "⚠️ WARNING"
+            toaster.show_toast(
+                f"{title} - Afterburner",
+                message,
+                duration=5,
+                threaded=True  # Важно, чтобы не блокировать поток сбора данных
             )
-        except Exception:
-            logger.warning("Failed to show notification", exc_info=True)
+        except Exception as e:
+            logger.warning(f"Failed to show notification: {e}", exc_info=True)
 
 
 # ============================================================

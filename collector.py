@@ -18,7 +18,7 @@ try:
 except ImportError:
     HAS_WMI = False
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QObject, pyqtSignal
 
 from config import config, thresholds
 
@@ -269,10 +269,11 @@ class DataCollectorThread(QThread):
 # NOTIFICATION MANAGER
 # ============================================================
 
-class NotificationManager:
+class NotificationManager(QObject):
     """Manages Windows toast notifications for threshold alerts."""
 
-    def __init__(self) -> None:
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
         self._last_notification: Dict[str, float] = {}
         self._cooldown: float = thresholds.get("notification_cooldown_ms", 30000)
 
@@ -323,13 +324,15 @@ class NotificationManager:
 # ALERT CHECKER
 # ============================================================
 
-class AlertChecker:
+class AlertChecker(QObject):
     """Checks metrics against thresholds and triggers notifications."""
 
+    alert_triggered = pyqtSignal(str, str, str)  # key, message, severity
+
     def __init__(self, notification_manager: NotificationManager) -> None:
+        super().__init__()
         self._notif = notification_manager
         self._last_alert_time: Dict[str, float] = {}
-        self.alert_triggered = None  # Will be set by main.py if needed
 
     def check(self, data: SystemData) -> None:
         """Check all metrics against thresholds."""

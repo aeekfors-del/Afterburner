@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import config, thresholds, load_config, save_config, Colors
-from collector import DataCollectorThread, SystemData
+from collector import DataCollectorThread, SystemData, AlertChecker, NotificationManager
 from ui_widgets import CircularGaugeWidget, SparklineWidget, InfoCardWidget, MainChartWidget
 
 logger = logging.getLogger("Afterburner.main")
@@ -301,6 +301,11 @@ class PopupWidget(QWidget):
 # HELPER FUNCTIONS
 # ============================================================
 
+def _on_alert_triggered(key, message, severity):
+    """Handle alert triggered signal."""
+    logger.warning(f"ALERT [{severity.upper()}]: {message}")
+
+
 def _show_popup_tray(tray):
     """Show popup window centered on screen (called via QTimer)."""
     logger.info("Showing popup window via QTimer...")
@@ -400,6 +405,21 @@ def main():
         logger.info("Collector connected successfully")
     except Exception as e:
         logger.error(f"Failed to connect collector: {e}", exc_info=True)
+        raise
+
+    # Initialize AlertChecker and NotificationManager
+    logger.info("Initializing AlertChecker and NotificationManager...")
+    try:
+        notif_manager = NotificationManager()
+        alert_checker = AlertChecker(notif_manager)
+        alert_checker.alert_triggered.connect(_on_alert_triggered)
+        collector.data_updated.connect(alert_checker.check)
+        logger.info("AlertChecker initialized, threshold monitoring active")
+        logger.info(f"Thresholds: cpu_temp_warn={thresholds['cpu_temp_warn']}°C, "
+                     f"gpu_temp_warn={thresholds['gpu_temp_warn']}°C, "
+                     f"cpu_usage_warn={thresholds['cpu_usage_warn']}%")
+    except Exception as e:
+        logger.error(f"Failed to initialize AlertChecker: {e}", exc_info=True)
         raise
 
     # Show initial popup if configured (disabled during dev for tray debugging)

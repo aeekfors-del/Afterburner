@@ -383,7 +383,20 @@ def main():
     logger.info("Afterburner starting...")
     logger.info("=" * 60)
 
-    # Load configuration
+    # Создаем Qt приложение
+    logger.info("Creating QApplication...")
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("Afterburner")
+        app.setOrganizationName("Afterburner")
+        # КРИТИЧЕСКИ ВАЖНО: Запрещаем приложению закрываться при закрытии popup-окна
+        app.setQuitOnLastWindowClosed(False)
+        logger.info("QApplication created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create QApplication: {e}", exc_info=True)
+        raise
+
+    # Загрузка конфигурации
     logger.info("Loading configuration...")
     try:
         load_config()
@@ -393,19 +406,7 @@ def main():
         logger.error(f"Failed to load config: {e}", exc_info=True)
         raise
 
-    # Create Qt application
-    logger.info("Creating QApplication...")
-    try:
-        app = QApplication(sys.argv)
-        app.setApplicationName("Afterburner")
-        app.setOrganizationName("Afterburner")
-        app.setQuitOnLastWindowClosed(False)  # Keep alive when popup closes
-        logger.info("QApplication created successfully")
-    except Exception as e:
-        logger.error(f"Failed to create QApplication: {e}", exc_info=True)
-        raise
-
-    # Create data collector
+    # Создаем сборщик данных
     logger.info("Creating DataCollectorThread...")
     try:
         global _collector
@@ -416,30 +417,12 @@ def main():
         logger.error(f"Failed to create collector: {e}", exc_info=True)
         raise
 
-    # Check system tray availability
-    logger.info("Checking system tray availability...")
-    from PyQt6.QtWidgets import QSystemTrayIcon as QSTI
-    tray_available = QSTI.isSystemTrayAvailable()
-    logger.info(f"System tray available: {tray_available}")
-    if not tray_available:
-        logger.error("No system tray available! Check display settings.")
-        # Create a simple window as fallback
-        fallback = QLabel("System tray not available. Check display settings.")
-        fallback.setWindowTitle("Afterburner")
-        fallback.resize(400, 100)
-        fallback.show()
-        sys.exit(app.exec())
-
-    # Create tray icon
+    # Создаем иконку в трее
     logger.info("Creating SystemTrayIcon...")
     try:
         tray = SystemTrayIcon()
-        logger.info(f"SystemTrayIcon created, popup_widget exists: {tray._popup_widget is not None}")
-        logger.info(f"Tray icon set: {tray.icon().isNull() if tray.icon() else 'NO ICON'}")
-        logger.info(f"Has context menu: {tray.contextMenu() is not None}")
-        # QSystemTrayIcon requires explicit show() to appear in tray
-        tray.show()
-        logger.info("Tray icon shown")
+        tray.show()  # <-- КРИТИЧЕСКИ ВАЖНО: Без этого иконка НЕ появится в трее
+        logger.info("SystemTrayIcon created and shown")
     except Exception as e:
         logger.error(f"Failed to create tray icon: {e}", exc_info=True)
         raise

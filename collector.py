@@ -146,25 +146,37 @@ class DataCollectorThread(QThread):
         except Exception:
             logger.warning("Failed to collect CPU metrics", exc_info=True)
 
-        # CPU Temperature
-        try:
-            temps = psutil.sensors_temperatures()
-            if temps:
-                temp_list: List[float] = []
-                for entries in temps.values():
-                    for entry in entries:
-                        if entry.current and entry.current > 0:
-                            temp_list.append(entry.current)
-
-                if temp_list:
-                    data.cpu_temp = {"CPU": round(max(temp_list), 1)}
-                    for key, entries in temps.items():
-                        for i, entry in enumerate(entries):
+        # CPU Temperature - только для Linux
+        import platform
+        if platform.system() == "Linux":
+            try:
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    temp_list: List[float] = []
+                    for entries in temps.values():
+                        for entry in entries:
                             if entry.current and entry.current > 0:
-                                label = entry.label or f"Core {i}"
-                                data.cpu_temp[label] = round(entry.current, 1)
-        except Exception:
-            logger.warning("Failed to collect CPU temperature", exc_info=True)
+                                temp_list.append(entry.current)
+
+                    if temp_list:
+                        data.cpu_temp = {"CPU": round(max(temp_list), 1)}
+                        for key, entries in temps.items():
+                            for i, entry in enumerate(entries):
+                                if entry.current and entry.current > 0:
+                                    label = entry.label or f"Core {i}"
+                                    data.cpu_temp[label] = round(entry.current, 1)
+            except Exception:
+                logger.warning("Failed to collect CPU temperature", exc_info=True)
+        else:
+            # На Windows используем WMI для температуры CPU
+            if self._wmi:
+                try:
+                    for sensor in self._wmi.MSAcpi_ThermalZoneTemperature(root="wmi"):
+                        temp_c = (sensor.CurrentTemperature - 2732) / 10.0
+                        data.cpu_temp = {"CPU": round(temp_c, 1)}
+                        break
+                except Exception:
+                    logger.debug("CPU temperature not available via WMI")
 
     def _collect_gpu(self, data: SystemData) -> None:
         """Collect GPU info using NVML or WMI."""
@@ -255,17 +267,28 @@ class DataCollectorThread(QThread):
 
     def _collect_fans(self, data: SystemData) -> None:
         """Collect fan speed metrics."""
-        try:
-            fans = psutil.sensors_fans()
-            if fans:
-                data.fans = []
-                for key, entries in fans.items():
-                    for entry in entries:
-                        rpm = entry.fans[0] if entry.fans else 0
-                        label = entry.label or f"{key} Fan"
-                        data.fans.append((label, rpm))
-        except Exception:
-            logger.warning("Failed to collect fan metrics", exc_info=True)
+        import platform
+        if platform.system() == "Linux":
+            try:
+                fans = psutil.sensors_fans()
+                if fans:
+                    data.fans = []
+                    for key, entries in fans.items():
+                        for entry in entries:
+                            rpm = entry.fans[0] if entry.fans else 0
+                            label = entry.label or f"{key} Fan"
+                            data.fans.append((label, rpm))
+            except Exception:
+                logger.warning("Failed to collect fan metrics", exc_info=True)
+        else:
+            # На Windows используем WMI для вентиляторов
+            if self._wmi:
+                try:
+                    for fan in self._wmi.Win32_Fan():
+                        if hasattr(fan, 'DesiredSpeed') and fan.DesiredSpeed:
+                            data.fans.append(("System Fan", fan.DesiredSpeed))
+                except Exception:
+                    logger.debug("Fan metrics not available via WMI")
 
     def _collect_disk(self, data: SystemData) -> None:
         """Collect disk usage metrics."""

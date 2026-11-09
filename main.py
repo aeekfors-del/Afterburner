@@ -12,7 +12,7 @@ import sys
 import time
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QPoint
-from PyQt6.QtGui import QAction, QIcon, QCursor, QPainter, QColor, QFont, QPen
+from PyQt6.QtGui import QAction, QIcon, QCursor, QPainter, QColor, QFont, QPen, QRadialGradient, QBrush
 from PyQt6.QtWidgets import (
     QApplication, QSystemTrayIcon, QMenu, QWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout

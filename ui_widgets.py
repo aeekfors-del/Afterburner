@@ -105,18 +105,19 @@ class SparklineWidget(QFrame):
         pen = QPen(color, 2)
         painter.setPen(pen)
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        painter.beginPath()
-
+        
+        # Исправлено: используем QPainterPath вместо beginPath()
+        line_path = QPainterPath()
         for i, val in enumerate(data):
             x = i * step
             normalized = (val - min_val) / range_val
             y = h - normalized * (h - 4) - 2
             if i == 0:
-                painter.moveTo(x, y)
+                line_path.moveTo(x, y)
             else:
-                painter.lineTo(x, y)
+                line_path.lineTo(x, y)
 
-        painter.strokePath(painter.path(), pen)
+        painter.drawPath(line_path)
         painter.end()
 
 

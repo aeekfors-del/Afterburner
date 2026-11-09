@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files (user-specific)
+.afterburner_config.json
+
+# Generated files
+*.exe
+*.log
+output.log
+
+# Test files
+test.txt
+test2.txt
+test3.py
+gen_service.py
+build_service.py
+build_monitor.py
+new_monitor.py
+hello.py

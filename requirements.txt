@@ -1,0 +1,5 @@
+psutil>=5.9.0
+PyQt6>=6.5.0
+pywin32>=306
+GPUtil; sys_platform == 'win32'
+pillow>=10.0.0

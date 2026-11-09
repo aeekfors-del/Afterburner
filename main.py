@@ -7,6 +7,7 @@ Main entry point with system tray and popup window.
 
 import atexit
 import logging
+import os
 import sys
 import time
 
@@ -70,35 +71,45 @@ class SystemTrayIcon(QSystemTrayIcon):
         self._setup_popup()
 
     def _create_icon(self):
-        """Create a simple icon programmatically."""
-        try:
-            # Try to load from file
-            icon_path = "icon.png"
+        """Create a visible icon programmatically."""
+        # Try to load from file first
+        icon_path = "icon.png"
+        if os.path.exists(icon_path):
             self.setIcon(QIcon(icon_path))
-        except Exception:
-            # Fallback: create a simple colored icon
-            pixmap = self._create_pixmap_icon()
-            self.setIcon(QIcon(pixmap))
+            return
 
-    def _create_pixmap_icon(self):
-        """Create a simple pixmap icon."""
+        # Fallback: create a simple colored icon
+        self._set_programmatic_icon()
+
+    def _set_programmatic_icon(self):
+        """Set icon drawn with QPainter."""
         from PyQt6.QtGui import QPixmap
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(Qt.GlobalColor.transparent)
+
+        size = 64
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor("#0a0e17"))
+
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Draw a circle
-        painter.setPen(QPen(Colors.get("accent_blue"), 3))
+        # Outer circle
+        painter.setPen(QPen(QColor("#06b6d4"), 3))
         painter.setBrush(QColor("#0a0e17"))
-        painter.drawEllipse(4, 4, 56, 56)
+        painter.drawEllipse(3, 3, size - 6, size - 6)
 
-        # Draw a simple gauge arc
-        painter.setPen(QPen(Colors.get("accent_cyan"), 3))
-        painter.drawArc(8, 8, 48, 48, 135 * 16, -270 * 16)
+        # Letter "A"
+        font = QFont("Arial", 32, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor("#06b6d4"))
+        painter.drawText(
+            QRectF(0, 0, size, size),
+            Qt.AlignmentFlag.AlignCenter,
+            "A",
+        )
 
         painter.end()
-        return pixmap
+
+        self.setIcon(QIcon(pixmap))
 
     def _create_menu(self):
         """Create context menu."""

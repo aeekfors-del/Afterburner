@@ -133,6 +133,10 @@ class SystemTrayIcon(QSystemTrayIcon):
         """Open settings dialog."""
         logger.info("Settings requested")
 
+    def set_collector(self, collector):
+        """Connect data collector to popup widget."""
+        self._popup_widget.set_collector(collector)
+
     def _exit_app(self):
         """Exit the application."""
         logger.info("Exiting application")

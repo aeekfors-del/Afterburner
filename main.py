@@ -72,11 +72,16 @@ class SystemTrayIcon(QSystemTrayIcon):
 
     def _create_icon(self):
         """Create a visible icon programmatically."""
-        # Always create programmatic icon — file icon is unreliable
-        self._set_programmatic_icon()
+        icon = QIcon("icon.png")
+        # QIcon НЕ выбрасывает ошибку, если файла нет, он просто становится пустым (isNull)
+        if icon.isNull():
+            logger.info("icon.png not found, generating fallback icon")
+            pixmap = self._create_pixmap_icon()
+            icon = QIcon(pixmap)
+        self.setIcon(icon)
 
-    def _set_programmatic_icon(self):
-        """Set icon drawn with QPainter."""
+    def _create_pixmap_icon(self):
+        """Create a visible pixmap icon with letter 'A'."""
         from PyQt6.QtGui import QPixmap
 
         size = 64
@@ -103,8 +108,7 @@ class SystemTrayIcon(QSystemTrayIcon):
         )
 
         painter.end()
-
-        self.setIcon(QIcon(pixmap))
+        return pixmap
 
     def _create_menu(self):
         """Create context menu."""
@@ -326,8 +330,14 @@ class PopupWidget(QWidget):
 
     def hideEvent(self, event):
         """Handle hide event."""
+        logger.info("PopupWidget hideEvent called")
         self.hide_event(event)
         super().hideEvent(event)
+
+    def closeEvent(self, event):
+        """Handle close event."""
+        logger.info("PopupWidget closeEvent called")
+        super().closeEvent(event)
 
 
 # ============================================================
@@ -344,23 +354,15 @@ def _show_popup_tray(tray):
     logger.info("Showing popup window via QTimer...")
     try:
         popup = tray._popup_widget
-        logger.info(f"Popup widget: {popup is not None}")
         # Center on primary screen
         screen = QApplication.primaryScreen().geometry()
-        logger.info(f"Screen: {screen.width()}x{screen.height()}")
-        logger.info(f"Popup size: {popup.width()}x{popup.height()}")
         x = (screen.width() - popup.width()) // 2
         y = (screen.height() - popup.height()) // 2
-        logger.info(f"Moving to ({x}, {y})")
         popup.move(x, y)
         popup.show()
-        # Process events to ensure window is shown
-        QApplication.processEvents()
-        logger.info(f"Popup show called, isVisible: {popup.isVisible()}")
         popup.raise_()
         popup.activateWindow()
-        QApplication.processEvents()
-        logger.info(f"Popup shown at ({x}, {y}), visible: {popup.isVisible()}")
+        logger.info(f"Popup shown at ({x}, {y})")
     except Exception as e:
         logger.error(f"Failed to show popup: {e}", exc_info=True)
 
@@ -435,8 +437,9 @@ def main():
         logger.info(f"SystemTrayIcon created, popup_widget exists: {tray._popup_widget is not None}")
         logger.info(f"Tray icon set: {tray.icon().isNull() if tray.icon() else 'NO ICON'}")
         logger.info(f"Has context menu: {tray.contextMenu() is not None}")
-        # QSystemTrayIcon auto-appears in system tray — no show() needed
-        logger.info("Tray icon should now be visible in system tray")
+        # QSystemTrayIcon requires explicit show() to appear in tray
+        tray.show()
+        logger.info("Tray icon shown")
     except Exception as e:
         logger.error(f"Failed to create tray icon: {e}", exc_info=True)
         raise

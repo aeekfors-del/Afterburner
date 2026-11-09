@@ -164,6 +164,8 @@ class SystemTrayIcon(QSystemTrayIcon):
     def _exit_app(self):
         """Exit the application."""
         logger.info("Exiting application")
+        if hasattr(self, '_popup_widget') and self._popup_widget._collector:
+            self._popup_widget._collector.stop()
         QApplication.quit()
 
 

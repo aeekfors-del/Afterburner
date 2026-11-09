@@ -298,6 +298,28 @@ class PopupWidget(QWidget):
 
 
 # ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
+def _show_popup_tray(tray):
+    """Show popup window centered on screen (called via QTimer)."""
+    logger.info("Showing popup window via QTimer...")
+    try:
+        popup = tray._popup_widget
+        # Center on primary screen
+        screen = QApplication.primaryScreen().geometry()
+        x = (screen.width() - popup.width()) // 2
+        y = (screen.height() - popup.height()) // 2
+        popup.move(x, y)
+        popup.show()
+        popup.raise_()
+        popup.activateWindow()
+        logger.info(f"Popup shown at ({x}, {y}), visible: {popup.isVisible()}")
+    except Exception as e:
+        logger.error(f"Failed to show popup: {e}", exc_info=True)
+
+
+# ============================================================
 # MAIN APPLICATION
 # ============================================================
 
@@ -344,11 +366,29 @@ def main():
         logger.error(f"Failed to create collector: {e}", exc_info=True)
         raise
 
+    # Check system tray availability
+    logger.info("Checking system tray availability...")
+    from PyQt6.QtWidgets import QSystemTrayIcon as QSTI
+    tray_available = QSTI.isSystemTrayAvailable()
+    logger.info(f"System tray available: {tray_available}")
+    if not tray_available:
+        logger.error("No system tray available! Check display settings.")
+        # Create a simple window as fallback
+        fallback = QLabel("System tray not available. Check display settings.")
+        fallback.setWindowTitle("Afterburner")
+        fallback.resize(400, 100)
+        fallback.show()
+        sys.exit(app.exec())
+
     # Create tray icon
     logger.info("Creating SystemTrayIcon...")
     try:
         tray = SystemTrayIcon()
-        logger.info("SystemTrayIcon created, popup_widget exists:", tray._popup_widget is not None)
+        logger.info(f"SystemTrayIcon created, popup_widget exists: {tray._popup_widget is not None}")
+        logger.info(f"Tray icon set: {tray.icon().isNull() if tray.icon() else 'NO ICON'}")
+        logger.info(f"Has context menu: {tray.contextMenu() is not None}")
+        # QSystemTrayIcon auto-appears in system tray — no show() needed
+        logger.info("Tray icon should now be visible in system tray")
     except Exception as e:
         logger.error(f"Failed to create tray icon: {e}", exc_info=True)
         raise
@@ -362,15 +402,14 @@ def main():
         logger.error(f"Failed to connect collector: {e}", exc_info=True)
         raise
 
-    # Show initial popup if configured
+    # Show initial popup if configured (disabled during dev for tray debugging)
     if config.get("show_popup_on_click", True):
-        logger.info("Showing popup window...")
+        logger.info("Showing popup window after 1s delay...")
         try:
-            tray._toggle_popup()
-            logger.info("Popup shown, visible:", tray._popup_widget.isVisible())
+            # Small delay to ensure tray icon appears first
+            QTimer.singleShot(1000, lambda: _show_popup_tray(tray))
         except Exception as e:
-            logger.error(f"Failed to show popup: {e}", exc_info=True)
-            raise
+            logger.error(f"Failed to schedule popup: {e}", exc_info=True)
     else:
         logger.info("Popup auto-show disabled (tray only mode)")
 

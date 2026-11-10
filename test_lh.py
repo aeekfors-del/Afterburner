@@ -46,22 +46,15 @@ def main():
 
     # Try default URL
     print("\n[1/2] Connecting to LibreHardwareMonitor...")
-    lh = LibreHardwareMonitor("http://localhost:8085")
+    lh = LibreHardwareMonitor()
 
     if not lh.available:
-        print("\n  ERROR: LibreHardwareMonitor is NOT reachable!")
-        print("  Make sure LHM is running with HTTP Server enabled.")
-        print()
-        print("  To enable HTTP in LHM:")
-        print("    1. Open LibreHardwareMonitor")
-        print("    2. Tools - Settings - HTTP Server")
-        print("    3. Check 'Enable HTTP server'")
-        print("    4. Click OK")
-        print()
-        print("  Or run portable: LibreHardwareMonitor.exe -http")
+        print("\n  ERROR: LibreHardwareMonitor failed to initialize!")
+        print("  Make sure LHM is installed in ./LHM/")
+        print("  And LibreHardwareMonitorLib.dll is present.")
         return
 
-    print(f"\n  ✓ Connected to LHM at {lh.base_url}")
+    print(f"\n  [OK] LibreHardwareMonitor initialized successfully")
 
     # Raw sensor list
     print_section("ALL SENSORS")
@@ -107,7 +100,7 @@ def main():
     print_separator()
 
     try:
-        prev = None
+        prev_fans = prev_voltages = prev_temps = None
         frame = 0
         while True:
             frame += 1
@@ -115,8 +108,10 @@ def main():
             voltages = lh.get_voltages()
             temps = lh.get_temperatures()
 
-            changed = (fans != prev[0] or voltages != prev[1] or temps != prev[2] or frame % 50 == 0)
-            prev = (fans, voltages, temps)
+            changed = (fans != prev_fans or voltages != prev_voltages or temps != prev_temps or frame % 50 == 0)
+            prev_fans = fans
+            prev_voltages = voltages
+            prev_temps = temps
 
             if changed:
                 print(f"\n  [{time.strftime('%H:%M:%S')}] Frame #{frame}")

@@ -2,19 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 LibreHardwareMonitor HTTP API client.
-Connects to running LibreHardwareMonitor instance via HTTP API.
+Connects to running LibreHardwareMonitor instance via HTTP.
 
 Requirements:
   - LibreHardwareMonitor running with HTTP Server enabled
   - Default: http://localhost:8085
-  - Enable in LHM: Settings → HTTP Server → Enable HTTP server
+  - Enable in LHM: Tools → Settings → HTTP Server → Enable HTTP server
 """
 
 import json
 import logging
+import re
 import time
 import urllib.request
-import urllib.error
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("Afterburner.lh_monitor")
@@ -22,15 +22,15 @@ logger = logging.getLogger("Afterburner.lh_monitor")
 
 class LhSensor:
     """Single sensor from LibreHardwareMonitor."""
-    __slots__ = ["name", "value", "unit", "sensor_type", "identifier", "path"]
+    __slots__ = ["name", "value", "unit", "sensor_type", "sensor_id", "hardware"]
 
     def __init__(self) -> None:
         self.name: str = ""
         self.value: float = 0.0
         self.unit: str = ""
         self.sensor_type: str = ""
-        self.identifier: str = ""
-        self.path: str = ""
+        self.sensor_id: str = ""
+        self.hardware: str = ""
 
     def __repr__(self) -> str:
         return f"LhSensor({self.name}: {self.value:.2f} {self.unit})"
@@ -40,27 +40,17 @@ class LibreHardwareMonitor:
     """
     Client for LibreHardwareMonitor HTTP API.
     
-    LHM exposes sensor data via REST-like endpoints:
-      GET /api/search?type=sensor  — full sensor tree
-      GET /api/values              — flat sensor values
+    LHM exposes sensor data via:
+      GET /data.json — full sensor tree in JSON
     """
-
-    # LHM unit names
-    UNIT_TEMPERATURE = "degreeCelsius"
-    UNIT_FAN_RPM = "revolutionsPerMinute"
-    UNIT_VOLTAGE = "volt"
-    UNIT_POWER = "watt"
-    UNIT_CURRENT = "ampere"
-    UNIT_CLOCK = "megahertz"
-    UNIT_PERCENT = "percent"
 
     def __init__(self, base_url: str = "http://localhost:8085") -> None:
         self._base_url = base_url.rstrip("/")
         self._available = False
         self._sensors: List[LhSensor] = []
         self._last_fetch = 0.0
-        self._cache_ttl = 0.15  # 150ms cache
-        self._fetch()  # initial fetch
+        self._cache_ttl = 0.15
+        self._fetch()
 
     @property
     def available(self) -> bool:
@@ -71,20 +61,15 @@ class LibreHardwareMonitor:
         return self._base_url
 
     def _fetch(self) -> bool:
-        """Fetch all sensor data from LHM HTTP API."""
+        """Fetch all sensor data from LHM /data.json endpoint."""
         try:
-            url = f"{self._base_url}/api/search?type=sensor"
+            url = f"{self._base_url}/data.json"
             req = urllib.request.Request(url)
             with urllib.request.urlopen(req, timeout=2) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
-            if time.time() - self._last_fetch > 10:
-                logger.debug("LHM not reachable: %s", exc)
-            self._available = False
-            return False
         except Exception as exc:
             if time.time() - self._last_fetch > 10:
-                logger.warning("LHM fetch error: %s", exc)
+                logger.debug("LHM not reachable: %s", exc)
             self._available = False
             return False
 
@@ -93,97 +78,75 @@ class LibreHardwareMonitor:
         self._last_fetch = time.time()
         return True
 
-    def _parse(self, data: List[Dict[str, Any]]) -> None:
+    def _parse(self, data: Any) -> None:
         """Parse LHM JSON response into sensor list."""
         self._sensors = []
-        for item in data:
-            self._parse_node(item)
+        if isinstance(data, dict):
+            self._parse_node(data)
 
     def _parse_node(self, node: Dict[str, Any]) -> None:
         """Recursively parse LHM node tree."""
-        identifier = node.get("Identifier", "")
-        name = node.get("Name", "")
+        children = node.get("Children", None)
+        if children is not None and len(children) > 0:
+            for child in children:
+                if isinstance(child, dict):
+                    self._parse_node(child)
+            return
 
-        # Parse groups (e.g., "GPU core", "Memory", "Heat sink")
-        for group in node.get("Groups", []):
-            self._parse_node(group)
+        sensor_type = node.get("Type", "")
+        raw_value = node.get("RawValue", "")
+        hardware_id = node.get("HardwareId", "")
 
-        # Parse sections (e.g., "SMN", "CPU DIE")
-        for section in node.get("Sections", []):
-            self._parse_node(section)
+        if not sensor_type or not raw_value:
+            return
 
-        # Parse parameters (actual sensors)
-        for param in node.get("Parameters", []):
-            value = param.get("Value")
-            if value is None:
-                continue
+        sensor = LhSensor()
+        sensor.name = node.get("Text", "")
+        sensor.sensor_id = node.get("SensorId", "")
+        sensor.hardware = hardware_id
+        sensor.sensor_type = sensor_type.lower()
 
-            try:
-                val = float(value)
-            except (ValueError, TypeError):
-                continue
-
-            sensor = LhSensor()
-            sensor.name = param.get("Name", name)
-            sensor.value = val
-            sensor.unit = param.get("Unit", "")
-            sensor.identifier = param.get("Identifier", "")
-            sensor.path = f"{identifier}/{name}" if identifier else name
-
-            # Determine sensor type from unit
-            unit = sensor.unit.lower()
-            if unit == self.UNIT_TEMPERATURE:
-                sensor.sensor_type = "temperature"
-            elif unit == self.UNIT_FAN_RPM:
-                sensor.sensor_type = "fan"
-            elif unit == self.UNIT_VOLTAGE:
-                sensor.sensor_type = "voltage"
-            elif unit == self.UNIT_POWER:
-                sensor.sensor_type = "power"
-            elif unit == self.UNIT_CURRENT:
-                sensor.sensor_type = "current"
-            elif unit == self.UNIT_CLOCK:
-                sensor.sensor_type = "clock"
-            elif unit == self.UNIT_PERCENT:
-                sensor.sensor_type = "percent"
+        # Parse value based on type
+        value_str = node.get("Value", "")
+        try:
+            val_str = re.sub(r"[^\d.,-]", "", value_str.replace(",", "."))
+            if val_str:
+                sensor.value = float(val_str)
             else:
-                sensor.sensor_type = "other"
+                sensor.value = 0.0
+        except (ValueError, TypeError):
+            sensor.value = 0.0
 
-            self._sensors.append(sensor)
+        # Parse unit from value string
+        unit_match = re.search(r"([^\d.,\-]+)$", value_str)
+        sensor.unit = unit_match.group(1).strip() if unit_match else ""
+
+        self._sensors.append(sensor)
 
     # ============================================================
-    # PUBLIC API — motherboard sensors
+    # PUBLIC API
     # ============================================================
 
     def get_fan_speeds(self) -> List[Tuple[str, int]]:
         """Get all fan speeds in RPM."""
         if not self._available or not self._check_cache():
             self._fetch()
-        result: List[Tuple[str, int]] = []
-        for s in self._sensors:
-            if s.sensor_type == "fan" and s.value > 0:
-                result.append((s.name, int(s.value)))
-        return result
+        return [(s.name, int(s.value)) for s in self._sensors
+                if s.sensor_type == "fan" and s.value > 0]
 
     def get_voltages(self) -> List[Tuple[str, float]]:
         """Get all voltages in Volts."""
         if not self._available or not self._check_cache():
             self._fetch()
-        result: List[Tuple[str, float]] = []
-        for s in self._sensors:
-            if s.sensor_type == "voltage" and s.value > 0:
-                result.append((s.name, round(s.value, 3)))
-        return result
+        return [(s.name, round(s.value, 3)) for s in self._sensors
+                if s.sensor_type == "voltage" and s.value > 0]
 
     def get_temperatures(self) -> List[Tuple[str, float]]:
         """Get all temperatures in °C."""
         if not self._available or not self._check_cache():
             self._fetch()
-        result: List[Tuple[str, float]] = []
-        for s in self._sensors:
-            if s.sensor_type == "temperature" and s.value > 0:
-                result.append((s.name, round(s.value, 1)))
-        return result
+        return [(s.name, round(s.value, 1)) for s in self._sensors
+                if s.sensor_type == "temperature" and s.value > 0]
 
     def get_all(self) -> Dict[str, List[Tuple[str, Any]]]:
         """Get all sensor categories."""
@@ -205,37 +168,11 @@ class LibreHardwareMonitor:
                 "value": s.value,
                 "unit": s.unit,
                 "type": s.sensor_type,
-                "identifier": s.identifier,
-                "path": s.path,
+                "id": s.sensor_id,
+                "hardware": s.hardware,
             }
             for s in self._sensors
         ]
-
-    def get_cpu(self) -> Dict[str, Any]:
-        """Get CPU-specific sensors."""
-        if not self._available or not self._check_cache():
-            self._fetch()
-        return {
-            "temps": [(n, v) for n, v in self._get_by_type("temperature") if "cpu" in n.lower() or "core" in n.lower()],
-            "clocks": [(n, v) for n, v in self._get_by_type("clock") if "cpu" in n.lower()],
-            "power": [(n, v) for n, v in self._get_by_type("power") if "cpu" in n.lower()],
-        }
-
-    def get_gpu(self) -> Dict[str, Any]:
-        """Get GPU-specific sensors."""
-        if not self._available or not self._check_cache():
-            self._fetch()
-        return {
-            "temps": [(n, v) for n, v in self._get_by_type("temperature") if "gpu" in n.lower()],
-            "fans": [(n, v) for n, v in self._get_by_type("fan") if "gpu" in n.lower()],
-            "clocks": [(n, v) for n, v in self._get_by_type("clock") if "gpu" in n.lower()],
-            "power": [(n, v) for n, v in self._get_by_type("power") if "gpu" in n.lower()],
-            "memory": [(n, v) for n, v in self._get_by_type("clock") if "memory" in n.lower()],
-        }
-
-    def _get_by_type(self, stype: str) -> List[Tuple[str, float]]:
-        """Get sensors by type."""
-        return [(s.name, s.value) for s in self._sensors if s.sensor_type == stype]
 
     def _check_cache(self) -> bool:
         """Return True if cache is still valid."""

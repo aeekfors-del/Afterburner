@@ -20,12 +20,22 @@ if skin_dir.exists():
         if f.is_file():
             skin_files.append((str(f), str(skin_dir.relative_to(project_dir))))
 
+# Collect LHM portable
+lhm_dir = project_dir / "LHM"
+lhm_files = []
+if lhm_dir.exists():
+    for f in lhm_dir.rglob("*"):
+        if f.is_file():
+            lhm_files.append((str(f), str(lhm_dir.relative_to(project_dir))))
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[
         (str(skin_dir), 'Skins/MSICyborgRed'),
+        (str(lhm_dir), 'LHM'),
+        (str(project_dir / "icon.png"), '.'),
     ],
     hiddenimports=[
         'lh_monitor',

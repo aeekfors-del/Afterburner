@@ -2,31 +2,162 @@
 # -*- coding: utf-8 -*-
 """
 Afterburner - System Monitor Service
-Main entry point with system tray and popup window.
+Main entry point with skin-based UI (MSI Cyborg Red style).
 """
 
 import atexit
 import logging
-import os
 import sys
-import time
+from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPoint
-from PyQt6.QtGui import QAction, QIcon, QCursor, QPainter, QColor, QFont, QPen, QRadialGradient, QBrush
-from PyQt6.QtWidgets import (
-    QApplication, QSystemTrayIcon, QMenu, QWidget,
-    QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout
-)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication
 
-from config import config, thresholds, load_config, save_config, Colors
-from collector import DataCollectorThread, SystemData, AlertChecker, NotificationManager
-from ui_widgets import CircularGaugeWidget, SparklineWidget, InfoCardWidget, MainChartWidget
+from config import config, load_config
+from collector import DataCollectorThread, SystemData
 
 logger = logging.getLogger("Afterburner.main")
 
 # Module-level reference for cleanup
 _collector = None
 
+SKIN_DIR = Path(__file__).parent / "Skins" / "MSICyborgRed"
+
+# ============================================================
+# НАСТРОЙКИ ПОЗИЦИЙ
+# ============================================================
+
+LEFT_CX = 130       # Центр левого тахометра (GPU Clock / Mem Clock)
+RIGHT_CX = 600      # Центр правого тахометра (Voltage / Temp)
+
+TOP_Y = 177         # Верхняя строка
+BOT_Y = 218         # Нижняя строка
+
+# Фиксированная ширина полей в символах
+W_FREQ = 5          # частоты: "02262", "14001"
+W_VOLT = 4          # напряжение: "1010"
+W_TEMP = 4          # температура: "0040"
+
+# Размер символа из DigitFont.png
+CHAR_W = 16
+CHAR_H = 32
+BASE_CHAR = ord('-')   # первый символ в спрайт-листе
+
+
+# ============================================================
+# SKIN LOADING
+# ============================================================
+
+def _load_skin_with_transparency(path: Path) -> QPixmap:
+    """Load PNG skin with color key transparency."""
+    img = QImage(str(path))
+    if img.isNull():
+        logger.error("Skin file not found: %s", path)
+        return QPixmap()
+
+    key = img.pixelColor(0, 0)
+
+    out = img.convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(out.height()):
+        for x in range(out.width()):
+            c = out.pixelColor(x, y)
+            if (abs(c.red() - key.red()) < 10 and
+                    abs(c.green() - key.green()) < 10 and
+                    abs(c.blue() - key.blue()) < 10):
+                out.setPixelColor(x, y, QColor(0, 0, 0, 0))
+
+    return QPixmap.fromImage(out)
+
+
+# ============================================================
+# MAIN WINDOW
+# ============================================================
+
+class CyborgWindow(QApplication):
+    """Skin-based UI window for Afterburner."""
+
+    def __init__(self):
+        super().__init__(sys.argv)
+        
+        # Загрузка скина
+        self._bg = _load_skin_with_transparency(SKIN_DIR / "SkinBase.png")
+        if self._bg.isNull():
+            logger.error("SkinBase.png не найден")
+            sys.exit(1)
+
+        # Цифровой шрифт
+        self._font_px = QPixmap(str(SKIN_DIR / "DigitFont.png"))
+
+        # Данные
+        self._data = SystemData()
+        self._collector = DataCollectorThread()
+        self._collector.data_updated.connect(self._on_data)
+        self._collector.start()
+
+        # Таймер для обновления
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._refresh)
+        self._timer.start(50)  # 20 FPS
+
+        # Начальное обновление
+        self._refresh()
+
+        logger.info("Cyborg Window готов")
+
+    def _on_data(self, data: SystemData):
+        """Handle new data from collector."""
+        self._data = data
+
+    def _refresh(self):
+        """Refresh the window."""
+        # Перерисовка через update()
+        pass
+
+    def paint(self, painter: QPainter):
+        """Paint the window."""
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.drawPixmap(0, 0, self._bg)
+
+        d = self._data
+
+        # Левый тахометр - GPU Clock / Mem Clock
+        gpu_f = int(d.gpu_freq) if d.gpu_freq > 0 else 0
+        self._draw_text(painter, LEFT_CX, TOP_Y, f"{gpu_f:0{W_FREQ}d}", W_FREQ)
+
+        mem_f = int(d.gpu_mem_freq) if d.gpu_mem_freq > 0 else 0
+        self._draw_text(painter, LEFT_CX, BOT_Y, f"{mem_f:0{W_FREQ}d}", W_FREQ)
+
+        # Правый тахометр - GPU Voltage / Temp
+        volt = int(d.gpu_voltage * 1000) if d.gpu_voltage > 0 else 0
+        self._draw_text(painter, RIGHT_CX, TOP_Y, f"{volt:0{W_VOLT}d}", W_VOLT)
+
+        temp = int(d.gpu_temp) if d.gpu_temp > 0 else 0
+        self._draw_text(painter, RIGHT_CX, BOT_Y, f"{temp:0{W_TEMP}d}", W_TEMP)
+
+    def _draw_text(self, painter: QPainter, cx: int, y: int, text: str, width: int):
+        """Рисует текст фиксированной ширины, центрированный по cx."""
+        total_w = width * CHAR_W
+        x = cx - total_w // 2
+
+        for ch in text:
+            idx = ord(ch) - BASE_CHAR
+            max_idx = self._font_px.height() // CHAR_H
+            if 0 <= idx < max_idx:
+                src = QRectF(0, idx * CHAR_H, CHAR_W, CHAR_H)
+                dst = QRectF(x, y, CHAR_W, CHAR_H)
+                painter.drawPixmap(dst, self._font_px, src)
+            x += CHAR_W
+
+    def close(self):
+        """Close the window and stop collector."""
+        self._collector.stop()
+        atexit.unregister(self.close)
+
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
 def cleanup():
     """Gracefully stop background threads on exit."""
@@ -40,331 +171,6 @@ def cleanup():
 
 
 atexit.register(cleanup)
-
-
-# ============================================================
-# SYSTEM TRAY ICON
-# ============================================================
-
-class SystemTrayIcon(QSystemTrayIcon):
-    """System tray icon with popup menu."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._popup_visible = False
-        self._popup_widget = None
-
-        # Set icon
-        self._create_icon()
-
-        # Create menu
-        self._create_menu()
-        self.setContextMenu(self._menu)
-
-        # Show tooltip
-        self.setToolTip("Afterburner - System Monitor")
-
-        # Connect signals
-        self.activated.connect(self._on_activated)
-
-        # Create popup widget
-        self._setup_popup()
-
-    def _create_icon(self):
-        """Create a visible icon programmatically."""
-        icon = QIcon("icon.png")
-        # QIcon НЕ выбрасывает ошибку, если файла нет, он просто становится пустым (isNull)
-        if icon.isNull():
-            logger.info("icon.png not found, generating fallback icon")
-            pixmap = self._create_pixmap_icon()
-            icon = QIcon(pixmap)
-        self.setIcon(icon)
-
-    def _create_pixmap_icon(self):
-        """Create a visible pixmap icon with letter 'A'."""
-        from PyQt6.QtGui import QPixmap
-
-        size = 64
-        pixmap = QPixmap(size, size)
-        # Solid red background for maximum visibility
-        pixmap.fill(QColor("#ef4444"))
-
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # White circle outline
-        painter.setPen(QPen(QColor("#ffffff"), 3))
-        painter.setBrush(QColor("#ef4444"))
-        painter.drawEllipse(3, 3, size - 6, size - 6)
-
-        # Bold white letter "A"
-        font = QFont("Arial", 36, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.setPen(QColor("#ffffff"))
-        painter.drawText(
-            QRectF(0, 0, size, size),
-            Qt.AlignmentFlag.AlignCenter,
-            "A",
-        )
-
-        painter.end()
-        return pixmap
-
-    def _create_menu(self):
-        """Create context menu."""
-        self._menu = QMenu()
-
-        # Show/Hide action
-        self._show_action = QAction("Show Popup", self._menu)
-        self._show_action.triggered.connect(self._toggle_popup)
-        self._menu.addAction(self._show_action)
-
-        self._menu.addSeparator()
-
-        # Settings action
-        settings_action = QAction("Settings", self._menu)
-        settings_action.triggered.connect(self._open_settings)
-        self._menu.addAction(settings_action)
-
-        self._menu.addSeparator()
-
-        # Exit action
-        exit_action = QAction("Exit", self._menu)
-        exit_action.triggered.connect(self._exit_app)
-        self._menu.addAction(exit_action)
-
-    def _setup_popup(self):
-        """Setup the popup widget."""
-        self._popup_widget = PopupWidget()
-        self._popup_widget.hide_event = lambda event: self._on_popup_hidden()
-
-    def _toggle_popup(self):
-        """Show or hide the popup."""
-        if self._popup_visible:
-            self._popup_widget.hide()
-            self._popup_visible = False
-        else:
-            self._popup_widget.show()
-            self._popup_widget.raise_()
-            self._popup_visible = True
-
-    def _on_activated(self, reason):
-        """Handle tray icon activation."""
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self._toggle_popup()
-
-    def _on_popup_hidden(self):
-        """Handle popup window hiding."""
-        self._popup_visible = False
-
-    def _open_settings(self):
-        """Open settings dialog."""
-        logger.info("Settings requested")
-
-    def set_collector(self, collector):
-        """Connect data collector to popup widget."""
-        self._popup_widget.set_collector(collector)
-
-    def _exit_app(self):
-        """Exit the application."""
-        logger.info("Exiting application")
-        if hasattr(self, '_popup_widget') and self._popup_widget._collector:
-            self._popup_widget._collector.stop()
-        QApplication.quit()
-
-
-# ============================================================
-# POPUP WIDGET
-# ============================================================
-
-class PopupWidget(QWidget):
-    """Popup window displaying system metrics."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.hide_event = lambda event: None
-
-        self._setup_ui()
-        self._setup_styles()
-        self._setup_timer()
-
-        # Connect to data collector
-        self._collector = None
-
-    def _setup_ui(self):
-        """Setup the popup UI layout."""
-        self.setWindowTitle("Afterburner")
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.CustomizeWindowHint
-        )
-        # Solid background for visibility
-        self.setStyleSheet(
-            "PopupWidget { "
-            "   background: #0a0e17; "
-            "   border: 2px solid #06b6d4; "
-            "   border-radius: 12px; "
-            "}"
-        )
-
-        # Main layout
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(15)
-
-        # Header
-        header_layout = QHBoxLayout()
-        self._title_label = QLabel("AFTERBURNER")
-        self._title_label.setStyleSheet("color: #e8eaf0; font-size: 14px; font-weight: bold;")
-        header_layout.addWidget(self._title_label)
-
-        header_layout.addStretch()
-
-        self._time_label = QLabel("")
-        self._time_label.setStyleSheet("color: #7a8ba8; font-size: 12px;")
-        header_layout.addWidget(self._time_label)
-
-        self._uptime_label = QLabel("Uptime: 0d 0h")
-        self._uptime_label.setStyleSheet("color: #7a8ba8; font-size: 12px;")
-        header_layout.addWidget(self._uptime_label)
-
-        main_layout.addLayout(header_layout)
-
-        # Main content - gauges and cards
-        content_layout = QGridLayout()
-        content_layout.setSpacing(15)
-
-        # Left gauge - CPU
-        self._cpu_gauge = CircularGaugeWidget("accent_blue")
-        self._cpu_gauge.set_label("CPU")
-        self._cpu_gauge.set_sublabel("Temp", "0°C")
-        content_layout.addWidget(self._cpu_gauge, 0, 0)
-
-        # Right gauge - GPU
-        self._gpu_gauge = CircularGaugeWidget("accent_cyan")
-        self._gpu_gauge.set_label("GPU")
-        self._gpu_gauge.set_sublabel("VRAM", "0 GB")
-        content_layout.addWidget(self._gpu_gauge, 0, 1)
-
-        # Center panel - info cards
-        self._info_card = InfoCardWidget()
-        content_layout.addWidget(self._info_card, 0, 2)
-
-        main_layout.addLayout(content_layout)
-
-        # Bottom sparklines
-        sparkline_layout = QHBoxLayout()
-        sparkline_layout.setSpacing(10)
-
-        self._cpu_sparkline = SparklineWidget("accent_blue")
-        self._gpu_sparkline = SparklineWidget("accent_cyan")
-        self._ram_sparkline = SparklineWidget("accent_purple")
-
-        sparkline_layout.addWidget(self._cpu_sparkline)
-        sparkline_layout.addWidget(self._gpu_sparkline)
-        sparkline_layout.addWidget(self._ram_sparkline)
-
-        main_layout.addLayout(sparkline_layout)
-
-        # Set fixed size
-        self.resize(800, 450)
-
-    def _setup_styles(self):
-        """Setup widget styles."""
-        self.setStyleSheet(
-            "PopupWidget { "
-            "   background: rgba(10, 14, 23, 0.95); "
-            "   border: 1px solid #1e2a45; "
-            "   border-radius: 12px; "
-            "}"
-        )
-
-    def _setup_timer(self):
-        """Setup timer for updating time display."""
-        self._time_timer = QTimer(self)
-        self._time_timer.timeout.connect(self._update_time)
-        self._time_timer.start(1000)
-        self._update_time()
-
-    def _update_time(self):
-        """Update time display."""
-        from datetime import datetime
-        now = datetime.now()
-        self._time_label.setText(now.strftime("%H:%M"))
-
-    def set_collector(self, collector):
-        """Connect to data collector thread."""
-        self._collector = collector
-        collector.data_updated.connect(self._on_data_updated)
-
-    def _on_data_updated(self, data):
-        """Handle new data from collector."""
-        # Update CPU gauge
-        self._cpu_gauge.set_value(data.cpu_usage)
-        temp_str = f"{data.cpu_temp.get('CPU', 0):.0f}°C" if data.cpu_temp else "0°C"
-        self._cpu_gauge.set_sublabel("Temp", temp_str)
-
-        # Update GPU gauge
-        self._gpu_gauge.set_value(data.gpu_usage)
-        vram_str = f"{data.gpu_mem_used:.0f}/{data.gpu_mem_total:.0f} GB"
-        self._gpu_gauge.set_sublabel("VRAM", vram_str)
-
-        # Update info card
-        self._info_card.clear_items()
-        self._info_card.add_item("RAM", f"{data.ram_pct:.0f}%", "accent_purple")
-        self._info_card.add_item("Disk", f"{data.disk_pct:.0f}%", "accent_green")
-
-        # Update uptime
-        days = int(data.uptime // 24)
-        hours = int(data.uptime % 24)
-        self._uptime_label.setText(f"Uptime: {days}d {hours}h")
-
-        # Update sparklines
-        self._cpu_sparkline.add_value(data.cpu_usage)
-        self._gpu_sparkline.add_value(data.gpu_usage)
-        self._ram_sparkline.add_value(data.ram_pct)
-
-        # Update window title with key metrics
-        self.setWindowTitle(f"Afterburner - CPU: {data.cpu_usage:.0f}% GPU: {data.gpu_usage:.0f}%")
-
-    def hideEvent(self, event):
-        """Handle hide event."""
-        logger.info("PopupWidget hideEvent called")
-        self.hide_event(event)
-        super().hideEvent(event)
-
-    def closeEvent(self, event):
-        """Handle close event."""
-        logger.info("PopupWidget closeEvent called")
-        super().closeEvent(event)
-
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-def _on_alert_triggered(key, message, severity):
-    """Handle alert triggered signal."""
-    logger.warning(f"ALERT [{severity.upper()}]: {message}")
-
-
-def _show_popup_tray(tray):
-    """Show popup window centered on screen (called via QTimer)."""
-    logger.info("Showing popup window via QTimer...")
-    try:
-        popup = tray._popup_widget
-        # Center on primary screen
-        screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - popup.width()) // 2
-        y = (screen.height() - popup.height()) // 2
-        popup.move(x, y)
-        popup.show()
-        popup.raise_()
-        popup.activateWindow()
-        logger.info(f"Popup shown at ({x}, {y})")
-    except Exception as e:
-        logger.error(f"Failed to show popup: {e}", exc_info=True)
 
 
 # ============================================================
@@ -383,27 +189,25 @@ def main():
     logger.info("Afterburner starting...")
     logger.info("=" * 60)
 
+    # Загрузка конфигурации
+    logger.info("Loading configuration...")
+    try:
+        load_config()
+        logger.info(f"Config loaded: update_interval={config.get('update_interval_ms')}ms")
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}", exc_info=True)
+        raise
+
     # Создаем Qt приложение
     logger.info("Creating QApplication...")
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("Afterburner")
         app.setOrganizationName("Afterburner")
-        # КРИТИЧЕСКИ ВАЖНО: Запрещаем приложению закрываться при закрытии popup-окна
         app.setQuitOnLastWindowClosed(False)
         logger.info("QApplication created successfully")
     except Exception as e:
         logger.error(f"Failed to create QApplication: {e}", exc_info=True)
-        raise
-
-    # Загрузка конфигурации
-    logger.info("Loading configuration...")
-    try:
-        load_config()
-        logger.info(f"Config loaded: update_interval={config.get('update_interval_ms')}ms")
-        logger.info(f"Thresholds: cpu_temp_warn={thresholds['cpu_temp_warn']}°C")
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}", exc_info=True)
         raise
 
     # Создаем сборщик данных
@@ -417,56 +221,20 @@ def main():
         logger.error(f"Failed to create collector: {e}", exc_info=True)
         raise
 
-    # Создаем иконку в трее
-    logger.info("Creating SystemTrayIcon...")
+    # Создаем окно
+    logger.info("Creating CyborgWindow...")
     try:
-        tray = SystemTrayIcon()
-        tray.show()  # <-- КРИТИЧЕСКИ ВАЖНО: Без этого иконка НЕ появится в трее
-        logger.info("SystemTrayIcon created and shown")
+        window = CyborgWindow()
+        logger.info("CyborgWindow created successfully")
     except Exception as e:
-        logger.error(f"Failed to create tray icon: {e}", exc_info=True)
+        logger.error(f"Failed to create window: {e}", exc_info=True)
         raise
-
-    # Connect collector to popup
-    logger.info("Connecting collector to popup widget...")
-    try:
-        tray.set_collector(_collector)
-        logger.info("Collector connected successfully")
-    except Exception as e:
-        logger.error(f"Failed to connect collector: {e}", exc_info=True)
-        raise
-
-    # Initialize AlertChecker and NotificationManager
-    logger.info("Initializing AlertChecker and NotificationManager...")
-    try:
-        notif_manager = NotificationManager()
-        alert_checker = AlertChecker(notif_manager)
-        alert_checker.alert_triggered.connect(_on_alert_triggered)
-        _collector.data_updated.connect(alert_checker.check)
-        logger.info("AlertChecker initialized, threshold monitoring active")
-        logger.info(f"Thresholds: cpu_temp_warn={thresholds['cpu_temp_warn']}°C, "
-                     f"gpu_temp_warn={thresholds['gpu_temp_warn']}°C, "
-                     f"cpu_usage_warn={thresholds['cpu_usage_warn']}%")
-    except Exception as e:
-        logger.error(f"Failed to initialize AlertChecker: {e}", exc_info=True)
-        raise
-
-    # Show initial popup immediately
-    if config.get("show_popup_on_click", True):
-        logger.info("Showing popup window immediately...")
-        try:
-            _show_popup_tray(tray)
-        except Exception as e:
-            logger.error(f"Failed to show popup: {e}", exc_info=True)
-    else:
-        logger.info("Popup auto-show disabled (tray only mode)")
 
     logger.info("=" * 60)
     logger.info("Afterburner started successfully!")
-    logger.info("Check system tray for icon")
     logger.info("=" * 60)
 
-    # Start application event loop
+    # Запускаем приложение
     sys.exit(app.exec())
 
 

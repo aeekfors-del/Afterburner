@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Afterburner - Data collector module
-Handles system metrics collection (CPU, GPU, RAM, Fans, Disk, Uptime).
+Data collector for Afterburner system monitor.
+Integrates psutil, pynvml, and LibreHardwareMonitor.
 """
 
 import logging
@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pynvml
 import psutil
+from PyQt6.QtCore import QThread, pyqtSignal
 
 try:
     import wmi
@@ -18,10 +19,13 @@ try:
 except ImportError:
     HAS_WMI = False
 
-from PyQt6.QtCore import QThread, QObject, pyqtSignal
+try:
+    from lh_monitor import LibreHardwareMonitor
+    HAS_LHM = True
+except ImportError:
+    HAS_LHM = False
 
-from config import config, thresholds
-from lh_monitor import LibreHardwareMonitor
+from config import config
 
 logger = logging.getLogger("Afterburner.collector")
 
@@ -37,10 +41,10 @@ class SystemData:
         "cpu_usage", "cpu_per_core", "cpu_temp", "cpu_freq_current",
         "cpu_freq_max", "cpu_cores", "cpu_threads", "cpu_power",
         "gpu_usage", "gpu_temp", "gpu_mem_used", "gpu_mem_total",
-        "gpu_mem_pct", "gpu_freq", "gpu_power", "gpu_name",
+        "gpu_mem_pct", "gpu_freq", "gpu_mem_freq", "gpu_power", 
+        "gpu_voltage", "gpu_name",
         "ram_total", "ram_used", "ram_avail", "ram_pct", "ram_speed",
         "fans", "disk_total", "disk_used", "disk_pct", "uptime",
-        "mobo_fans", "mobo_voltages", "mobo_temps",
     ]
 
     def __init__(self) -> None:
@@ -52,27 +56,29 @@ class SystemData:
         self.cpu_cores: int = 0
         self.cpu_threads: int = 0
         self.cpu_power: float = 0.0
+        
         self.gpu_usage: float = 0.0
         self.gpu_temp: float = 0.0
         self.gpu_mem_used: float = 0.0
         self.gpu_mem_total: float = 0.0
         self.gpu_mem_pct: float = 0.0
         self.gpu_freq: float = 0.0
+        self.gpu_mem_freq: float = 0.0  # <-- НОВОЕ
         self.gpu_power: float = 0.0
+        self.gpu_voltage: float = 0.0   # <-- НОВОЕ
         self.gpu_name: str = "N/A"
+        
         self.ram_total: float = 0.0
         self.ram_used: float = 0.0
         self.ram_avail: float = 0.0
         self.ram_pct: float = 0.0
         self.ram_speed: int = 0
+        
         self.fans: List[Tuple[str, int]] = []
         self.disk_total: float = 0.0
         self.disk_used: float = 0.0
         self.disk_pct: float = 0.0
         self.uptime: float = 0.0
-        self.mobo_fans: List[Tuple[str, int]] = []
-        self.mobo_voltages: List[Tuple[str, float]] = []
-        self.mobo_temps: List[Tuple[str, float]] = []
 
     def __repr__(self) -> str:
         return (
@@ -94,21 +100,23 @@ class DataCollectorThread(QThread):
         super().__init__()
         self._running: bool = True
         self._wmi: Any = None
-        self._lh: LibreHardwareMonitor = None
+        self._lhm: Optional[LibreHardwareMonitor] = None
+        
         if HAS_WMI:
             try:
                 self._wmi = wmi.WMI()
             except Exception:
                 logger.warning("Failed to initialize WMI")
-        # Initialize LibreHardwareMonitor for motherboard sensors
-        try:
-            self._lh = LibreHardwareMonitor()
-            if self._lh.available:
-                logger.info("LibreHardwareMonitor connected — motherboard sensors available")
-            else:
-                logger.warning("LibreHardwareMonitor not available — run LHM with HTTP server enabled")
-        except Exception:
-            logger.warning("Failed to initialize LibreHardwareMonitor", exc_info=True)
+                
+        if HAS_LHM:
+            try:
+                self._lhm = LibreHardwareMonitor()
+                if self._lhm.available:
+                    logger.info("LibreHardwareMonitor connected successfully")
+                else:
+                    logger.warning("LibreHardwareMonitor not reachable (is HTTP server enabled?)")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LibreHardwareMonitor: {e}")
 
     def run(self) -> None:
         """Main collection loop."""
@@ -124,6 +132,8 @@ class DataCollectorThread(QThread):
     def stop(self) -> None:
         """Stop the collector thread."""
         self._running = False
+        if self._lhm:
+            self._lhm.close()
         self.wait()
 
     def _collect(self) -> SystemData:
@@ -137,7 +147,6 @@ class DataCollectorThread(QThread):
         self._collect_gpu(data)
         self._collect_ram(data)
         self._collect_fans(data)
-        self._collect_mobo(data)
         self._collect_disk(data)
         self._collect_uptime(data)
 
@@ -149,8 +158,7 @@ class DataCollectorThread(QThread):
             data.cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
             data.cpu_usage = (
                 sum(data.cpu_per_core) / len(data.cpu_per_core)
-                if data.cpu_per_core
-                else 0.0
+                if data.cpu_per_core else 0.0
             )
             data.cpu_cores = psutil.cpu_count(logical=False) or 0
             data.cpu_threads = psutil.cpu_count(logical=True) or 0
@@ -159,83 +167,53 @@ class DataCollectorThread(QThread):
             if freq:
                 data.cpu_freq_current = freq.current or 0.0
                 data.cpu_freq_max = (freq.max or freq.current or 0.0)
+                
+            # CPU Temperature fallback to LHM if psutil fails (typical on Windows)
+            if not data.cpu_temp and self._lhm and self._lhm.available:
+                temps = self._lhm.get_temperatures()
+                cpu_temps = [t for t in temps if "cpu" in t[0].lower() or "package" in t[0].lower()]
+                if cpu_temps:
+                    data.cpu_temp = {"CPU": max(t[1] for t in cpu_temps)}
+                    
         except Exception:
             logger.warning("Failed to collect CPU metrics", exc_info=True)
 
-        # CPU Temperature - только для Linux
-        import platform
-        if platform.system() == "Linux":
-            try:
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    temp_list: List[float] = []
-                    for entries in temps.values():
-                        for entry in entries:
-                            if entry.current and entry.current > 0:
-                                temp_list.append(entry.current)
-
-                    if temp_list:
-                        data.cpu_temp = {"CPU": round(max(temp_list), 1)}
-                        for key, entries in temps.items():
-                            for i, entry in enumerate(entries):
-                                if entry.current and entry.current > 0:
-                                    label = entry.label or f"Core {i}"
-                                    data.cpu_temp[label] = round(entry.current, 1)
-            except Exception:
-                logger.warning("Failed to collect CPU temperature", exc_info=True)
-        else:
-            # На Windows используем WMI для температуры CPU
-            if self._wmi:
-                try:
-                    for sensor in self._wmi.MSAcpi_ThermalZoneTemperature(root="wmi"):
-                        temp_c = (sensor.CurrentTemperature - 2732) / 10.0
-                        data.cpu_temp = {"CPU": round(temp_c, 1)}
-                        break
-                except Exception:
-                    logger.debug("CPU temperature not available via WMI")
-
     def _collect_gpu(self, data: SystemData) -> None:
         """Collect GPU info using NVML or WMI."""
-        logger.debug("Collecting GPU metrics...")
-
         # Method 1: NVML via pynvml (NVIDIA)
         try:
-            logger.debug("Attempting NVML init...")
             pynvml.nvmlInit()
             device_count = pynvml.nvmlDeviceGetCount()
-            logger.debug(f"NVML devices found: {device_count}")
-
             if device_count > 0:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(0)
                 data.gpu_name = pynvml.nvmlDeviceGetName(handle)
+                
                 util = pynvml.nvmlDeviceGetUtilizationRates(handle)
                 data.gpu_usage = float(util.gpu)
+                
                 data.gpu_temp = float(
-                    pynvml.nvmlDeviceGetTemperature(
-                        handle, pynvml.NVML_TEMPERATURE_GPU
-                    )
+                    pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
                 )
-                data.gpu_power = (
-                    pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-                )
+                
+                data.gpu_power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+                
+                # <-- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Частоты GPU -->
+                try:
+                    data.gpu_freq = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS))
+                except Exception:
+                    pass
+                    
+                try:
+                    data.gpu_mem_freq = float(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM))
+                except Exception:
+                    pass
+
                 pynvml.nvmlShutdown()
-                logger.info(
-                    "GPU [NVML]: %s | usage=%.1f%% temp=%.0fC power=%.0fW",
-                    data.gpu_name,
-                    data.gpu_usage,
-                    data.gpu_temp,
-                    data.gpu_power,
-                )
                 return
+        except Exception:
+            pass
 
-            logger.debug("NVML init OK but no devices found, trying WMI fallback...")
-
-        except Exception as exc:
-            logger.warning(
-                "NVML failed (%s), falling back to WMI", type(exc).__name__
-            )
-
-        # Method 2: WMI fallback (AMD / Intel / generic)
+        # Method 2: WMI fallback
         if self._wmi:
             try:
                 for gpu in self._wmi.Win32_VideoController():
@@ -243,26 +221,8 @@ class DataCollectorThread(QThread):
                         data.gpu_name = gpu.Name
                     if hasattr(gpu, "AdapterRAM") and gpu.AdapterRAM:
                         data.gpu_mem_total = gpu.AdapterRAM / (1024 ** 2)
-                logger.info(
-                    "GPU [WMI VideoController]: %s | VRAM=%.0f MB",
-                    data.gpu_name,
-                    data.gpu_mem_total,
-                )
             except Exception:
                 logger.warning("Failed to collect GPU info via WMI", exc_info=True)
-
-            try:
-                for gpu in self._wmi.Win32_PerfFormattedData_AdapterVideo():
-                    if hasattr(gpu, "PercentIdleTime"):
-                        data.gpu_usage = max(0.0, 100.0 - gpu.PercentIdleTime)
-                logger.info(
-                    "GPU [WMI PerfData]: usage=%.1f%%",
-                    data.gpu_usage,
-                )
-            except Exception:
-                logger.warning("Failed to collect GPU usage via WMI", exc_info=True)
-        else:
-            logger.warning("WMI not available — GPU metrics will be zero")
 
     def _collect_ram(self, data: SystemData) -> None:
         """Collect RAM metrics."""
@@ -282,63 +242,37 @@ class DataCollectorThread(QThread):
             logger.warning("Failed to collect RAM metrics", exc_info=True)
 
     def _collect_fans(self, data: SystemData) -> None:
-        """Collect fan speed metrics."""
-        import platform
-        if platform.system() == "Linux":
-            try:
-                fans = psutil.sensors_fans()
-                if fans:
-                    data.fans = []
-                    for key, entries in fans.items():
-                        for entry in entries:
-                            rpm = entry.fans[0] if entry.fans else 0
-                            label = entry.label or f"{key} Fan"
-                            data.fans.append((label, rpm))
-            except Exception:
-                logger.warning("Failed to collect fan metrics", exc_info=True)
-        else:
-            # На Windows используем WMI для вентиляторов
-            if self._wmi:
-                try:
-                    for fan in self._wmi.Win32_Fan():
-                        if hasattr(fan, 'DesiredSpeed') and fan.DesiredSpeed:
-                            data.fans.append(("System Fan", fan.DesiredSpeed))
-                except Exception:
-                    logger.debug("Fan metrics not available via WMI")
-
-    def _collect_mobo(self, data: SystemData) -> None:
-        """Collect motherboard sensors via LibreHardwareMonitor."""
-        if not self._lh or not self._lh.available:
-            return
-
+        """Collect fan speeds."""
         try:
-            data.mobo_fans = self._lh.get_fan_speeds()
-            data.mobo_voltages = self._lh.get_voltages()
-            data.mobo_temps = self._lh.get_temperatures()
-
-            logger.debug(
-                "Mobo sensors: %d fans, %d voltages, %d temps",
-                len(data.mobo_fans),
-                len(data.mobo_voltages),
-                len(data.mobo_temps),
-            )
+            fans = psutil.sensors_fans()
+            if fans:
+                data.fans = []
+                for key, entries in fans.items():
+                    for entry in entries:
+                        rpm = entry.current if hasattr(entry, 'current') else (entry.fans[0] if entry.fans else 0)
+                        label = entry.label if entry.label else f"{key} Fan"
+                        data.fans.append((label, int(rpm)))
         except Exception:
-            logger.warning("Failed to collect motherboard sensors", exc_info=True)
+            pass
+            
+        # Fallback to LHM if psutil returned nothing (typical on Windows)
+        if not data.fans and self._lhm and self._lhm.available:
+            data.fans = self._lhm.get_fan_speeds()
 
     def _collect_disk(self, data: SystemData) -> None:
-        """Collect disk usage metrics."""
+        """Collect disk metrics (first non-removable drive)."""
         try:
             for part in psutil.disk_partitions(all=False):
-                if "cdrom" in part.opts or part.fstype == "":
+                if 'cdrom' in part.opts or part.fstype == '':
                     continue
                 try:
                     usage = psutil.disk_usage(part.mountpoint)
                     data.disk_total = usage.total / (1024 ** 3)
                     data.disk_used = usage.used / (1024 ** 3)
-                    data.disk_pct = float(usage.percent)
-                    break
-                except PermissionError:
-                    continue
+                    data.disk_pct = usage.percent
+                except Exception:
+                    pass
+                break  # Берем только первый основной диск для простоты
         except Exception:
             logger.warning("Failed to collect disk metrics", exc_info=True)
 
@@ -346,153 +280,6 @@ class DataCollectorThread(QThread):
         """Collect system uptime."""
         try:
             boot_time = psutil.boot_time()
-            data.uptime = (time.time() - boot_time) / 3600.0
+            data.uptime = (time.time() - boot_time) / 3600
         except Exception:
-            logger.warning("Failed to collect uptime", exc_info=True)
-
-
-# ============================================================
-# NOTIFICATION MANAGER
-# ============================================================
-
-class NotificationManager(QObject):
-    """Manages Windows toast notifications for threshold alerts."""
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._last_notification: Dict[str, float] = {}
-        self._cooldown: float = thresholds.get("notification_cooldown_ms", 30000)
-
-    def check_and_notify(
-        self, key: str, message: str, severity: str = "info"
-    ) -> None:
-        """Check cooldown and show notification if needed."""
-        if not config.get("notifications_enabled", True):
-            return
-
-        now = time.time()
-        last = self._last_notification.get(key, 0)
-        if (now - last) * 1000 < self._cooldown:
-            return
-
-        self._last_notification[key] = now
-        self._show_notification(message, severity)
-
-    def _show_notification(self, message: str, severity: str) -> None:
-        """Show Windows toast notification."""
-        try:
-            from win10toast import ToastNotifier
-            toaster = ToastNotifier()
-
-            title = "🚨 CRITICAL" if severity == "critical" else "⚠️ WARNING"
-            toaster.show_toast(
-                f"{title} - Afterburner",
-                message,
-                duration=5,
-                threaded=True  # Важно, чтобы не блокировать поток сбора данных
-            )
-        except Exception as e:
-            logger.warning(f"Failed to show notification: {e}", exc_info=True)
-
-
-# ============================================================
-# ALERT CHECKER
-# ============================================================
-
-class AlertChecker(QObject):
-    """Checks metrics against thresholds and triggers notifications."""
-
-    alert_triggered = pyqtSignal(str, str, str)  # key, message, severity
-
-    def __init__(self, notification_manager: NotificationManager) -> None:
-        super().__init__()
-        self._notif = notification_manager
-        self._last_alert_time: Dict[str, float] = {}
-
-    def check(self, data: SystemData) -> None:
-        """Check all metrics against thresholds."""
-        self._check_cpu_temp(data)
-        self._check_gpu_temp(data)
-        self._check_cpu_usage(data)
-        self._check_gpu_usage(data)
-        self._check_ram_usage(data)
-
-    def _check_cpu_temp(self, data: SystemData) -> None:
-        """Check CPU temperature thresholds."""
-        temps = data.cpu_temp
-        if not temps:
-            return
-
-        max_temp = max(temps.values())
-
-        if max_temp >= thresholds["cpu_temp_crit"]:
-            self._alert(
-                "cpu_temp_crit",
-                f"CPU temperature critical: {max_temp:.0f}\u00b0C",
-                "critical",
-            )
-        elif max_temp >= thresholds["cpu_temp_warn"]:
-            self._alert(
-                "cpu_temp_warn",
-                f"CPU temperature high: {max_temp:.0f}\u00b0C",
-                "warning",
-            )
-
-    def _check_gpu_temp(self, data: SystemData) -> None:
-        """Check GPU temperature thresholds."""
-        if data.gpu_temp >= thresholds["gpu_temp_crit"]:
-            self._alert(
-                "gpu_temp_crit",
-                f"GPU temperature critical: {data.gpu_temp:.0f}\u00b0C",
-                "critical",
-            )
-        elif data.gpu_temp >= thresholds["gpu_temp_warn"]:
-            self._alert(
-                "gpu_temp_warn",
-                f"GPU temperature high: {data.gpu_temp:.0f}\u00b0C",
-                "warning",
-            )
-
-    def _check_cpu_usage(self, data: SystemData) -> None:
-        """Check CPU usage threshold."""
-        if data.cpu_usage >= thresholds["cpu_usage_warn"]:
-            self._alert(
-                "cpu_usage_warn",
-                f"CPU usage high: {data.cpu_usage:.0f}%",
-                "warning",
-            )
-
-    def _check_gpu_usage(self, data: SystemData) -> None:
-        """Check GPU usage threshold."""
-        if data.gpu_usage >= thresholds["gpu_usage_warn"]:
-            self._alert(
-                "gpu_usage_warn",
-                f"GPU usage high: {data.gpu_usage:.0f}%",
-                "warning",
-            )
-
-    def _check_ram_usage(self, data: SystemData) -> None:
-        """Check RAM usage threshold."""
-        if data.ram_pct >= thresholds["ram_usage_warn"]:
-            self._alert(
-                "ram_usage_warn",
-                f"RAM usage high: {data.ram_pct:.0f}%",
-                "warning",
-            )
-
-    def _alert(
-        self, key: str, message: str, severity: str
-    ) -> None:
-        """Trigger alert if cooldown has passed."""
-        now = time.time()
-        last = self._last_alert_time.get(key, 0)
-        cooldown = thresholds.get("notification_cooldown_ms", 30000) / 1000.0
-
-        if (now - last) < cooldown:
-            return
-
-        self._last_alert_time[key] = now
-        self._notif.check_and_notify(key, message, severity)
-
-        if self.alert_triggered:
-            self.alert_triggered.emit(key, message, severity)
+            pass

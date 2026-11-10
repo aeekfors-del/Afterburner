@@ -21,6 +21,7 @@ except ImportError:
 from PyQt6.QtCore import QThread, QObject, pyqtSignal
 
 from config import config, thresholds
+from lh_monitor import LibreHardwareMonitor
 
 logger = logging.getLogger("Afterburner.collector")
 
@@ -39,6 +40,7 @@ class SystemData:
         "gpu_mem_pct", "gpu_freq", "gpu_power", "gpu_name",
         "ram_total", "ram_used", "ram_avail", "ram_pct", "ram_speed",
         "fans", "disk_total", "disk_used", "disk_pct", "uptime",
+        "mobo_fans", "mobo_voltages", "mobo_temps",
     ]
 
     def __init__(self) -> None:
@@ -68,6 +70,9 @@ class SystemData:
         self.disk_used: float = 0.0
         self.disk_pct: float = 0.0
         self.uptime: float = 0.0
+        self.mobo_fans: List[Tuple[str, int]] = []
+        self.mobo_voltages: List[Tuple[str, float]] = []
+        self.mobo_temps: List[Tuple[str, float]] = []
 
     def __repr__(self) -> str:
         return (
@@ -89,11 +94,21 @@ class DataCollectorThread(QThread):
         super().__init__()
         self._running: bool = True
         self._wmi: Any = None
+        self._lh: LibreHardwareMonitor = None
         if HAS_WMI:
             try:
                 self._wmi = wmi.WMI()
             except Exception:
                 logger.warning("Failed to initialize WMI")
+        # Initialize LibreHardwareMonitor for motherboard sensors
+        try:
+            self._lh = LibreHardwareMonitor()
+            if self._lh.available:
+                logger.info("LibreHardwareMonitor connected — motherboard sensors available")
+            else:
+                logger.warning("LibreHardwareMonitor not available — run LHM with HTTP server enabled")
+        except Exception:
+            logger.warning("Failed to initialize LibreHardwareMonitor", exc_info=True)
 
     def run(self) -> None:
         """Main collection loop."""
@@ -122,6 +137,7 @@ class DataCollectorThread(QThread):
         self._collect_gpu(data)
         self._collect_ram(data)
         self._collect_fans(data)
+        self._collect_mobo(data)
         self._collect_disk(data)
         self._collect_uptime(data)
 
@@ -289,6 +305,25 @@ class DataCollectorThread(QThread):
                             data.fans.append(("System Fan", fan.DesiredSpeed))
                 except Exception:
                     logger.debug("Fan metrics not available via WMI")
+
+    def _collect_mobo(self, data: SystemData) -> None:
+        """Collect motherboard sensors via LibreHardwareMonitor."""
+        if not self._lh or not self._lh.available:
+            return
+
+        try:
+            data.mobo_fans = self._lh.get_fan_speeds()
+            data.mobo_voltages = self._lh.get_voltages()
+            data.mobo_temps = self._lh.get_temperatures()
+
+            logger.debug(
+                "Mobo sensors: %d fans, %d voltages, %d temps",
+                len(data.mobo_fans),
+                len(data.mobo_voltages),
+                len(data.mobo_temps),
+            )
+        except Exception:
+            logger.warning("Failed to collect motherboard sensors", exc_info=True)
 
     def _collect_disk(self, data: SystemData) -> None:
         """Collect disk usage metrics."""

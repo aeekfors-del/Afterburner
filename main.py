@@ -10,9 +10,9 @@ import logging
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtGui import QAction, QColor, QImage, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication, QWidget, QSystemTrayIcon, QMenu
 
 from config import config, load_config
 from collector import DataCollectorThread, SystemData
@@ -74,17 +74,23 @@ def _load_skin_with_transparency(path: Path) -> QPixmap:
 # MAIN WINDOW
 # ============================================================
 
-class CyborgWindow(QApplication):
+class CyborgWindow(QWidget):
     """Skin-based UI window for Afterburner."""
 
     def __init__(self):
-        super().__init__(sys.argv)
+        super().__init__()
+        
+        # Frameless transparent window
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         # Загрузка скина
         self._bg = _load_skin_with_transparency(SKIN_DIR / "SkinBase.png")
         if self._bg.isNull():
             logger.error("SkinBase.png не найден")
             sys.exit(1)
+
+        self.resize(self._bg.size())
 
         # Цифровой шрифт
         self._font_px = QPixmap(str(SKIN_DIR / "DigitFont.png"))
@@ -96,12 +102,9 @@ class CyborgWindow(QApplication):
         self._collector.start()
 
         # Таймер для обновления
-        self._timer = QTimer()
-        self._timer.timeout.connect(self._refresh)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.update)
         self._timer.start(50)  # 20 FPS
-
-        # Начальное обновление
-        self._refresh()
 
         logger.info("Cyborg Window готов")
 
@@ -109,13 +112,9 @@ class CyborgWindow(QApplication):
         """Handle new data from collector."""
         self._data = data
 
-    def _refresh(self):
-        """Refresh the window."""
-        # Перерисовка через update()
-        pass
-
-    def paint(self, painter: QPainter):
+    def paintEvent(self, event):
         """Paint the window."""
+        painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.drawPixmap(0, 0, self._bg)
 
@@ -135,6 +134,8 @@ class CyborgWindow(QApplication):
         temp = int(d.gpu_temp) if d.gpu_temp > 0 else 0
         self._draw_text(painter, RIGHT_CX, BOT_Y, f"{temp:0{W_TEMP}d}", W_TEMP)
 
+        painter.end()
+
     def _draw_text(self, painter: QPainter, cx: int, y: int, text: str, width: int):
         """Рисует текст фиксированной ширины, центрированный по cx."""
         total_w = width * CHAR_W
@@ -149,10 +150,85 @@ class CyborgWindow(QApplication):
                 painter.drawPixmap(dst, self._font_px, src)
             x += CHAR_W
 
-    def close(self):
-        """Close the window and stop collector."""
+    def closeEvent(self, event):
+        """Handle close event."""
         self._collector.stop()
-        atexit.unregister(self.close)
+        event.accept()
+
+
+# ============================================================
+# SYSTEM TRAY ICON
+# ============================================================
+
+class SystemTrayIcon(QSystemTrayIcon):
+    """System tray icon with popup menu."""
+
+    def __init__(self, window: CyborgWindow, parent=None):
+        super().__init__(parent)
+        self._window = window
+
+        # Set icon
+        icon_path = Path(__file__).parent / "icon.png"
+        if icon_path.exists():
+            self.setIcon(QIcon(str(icon_path)))
+        else:
+            self._create_fallback_icon()
+
+        # Create menu
+        self._create_menu()
+        self.setContextMenu(self._menu)
+        self.setToolTip("Afterburner - System Monitor")
+
+        self.activated.connect(self._on_activated)
+
+    def _create_fallback_icon(self):
+        """Create a fallback icon."""
+        from PyQt6.QtGui import QFont, QIcon, QPen
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(QColor("#ef4444"))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#ffffff"), 3))
+        painter.setBrush(QColor("#ef4444"))
+        painter.drawEllipse(3, 3, 58, 58)
+        font = QFont("Arial", 36, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(QRectF(0, 0, 64, 64), Qt.AlignmentFlag.AlignCenter, "A")
+        painter.end()
+        self.setIcon(QIcon(pixmap))
+
+    def _create_menu(self):
+        """Create context menu."""
+        self._menu = QMenu()
+
+        show_action = QAction("Show", self._menu)
+        show_action.triggered.connect(self._window.show)
+        self._menu.addAction(show_action)
+
+        hide_action = QAction("Hide", self._menu)
+        hide_action.triggered.connect(self._window.hide)
+        self._menu.addAction(hide_action)
+
+        self._menu.addSeparator()
+
+        exit_action = QAction("Exit", self._menu)
+        exit_action.triggered.connect(self._exit_app)
+        self._menu.addAction(exit_action)
+
+    def _on_activated(self, reason):
+        """Handle tray icon activation."""
+        from PyQt6.QtWidgets import QSystemTrayIcon
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            if self._window.isVisible():
+                self._window.hide()
+            else:
+                self._window.show()
+
+    def _exit_app(self):
+        """Exit the application."""
+        self._window._collector.stop()
+        QApplication.quit()
 
 
 # ============================================================
@@ -230,8 +306,28 @@ def main():
         logger.error(f"Failed to create window: {e}", exc_info=True)
         raise
 
+    # Создаем иконку в трее
+    logger.info("Creating SystemTrayIcon...")
+    try:
+        tray = SystemTrayIcon(window)
+        tray.show()
+        logger.info("SystemTrayIcon created and shown")
+    except Exception as e:
+        logger.error(f"Failed to create tray icon: {e}", exc_info=True)
+        raise
+
+    # Показываем окно
+    logger.info("Showing main window...")
+    try:
+        window.show()
+        logger.info("Window shown")
+    except Exception as e:
+        logger.error(f"Failed to show window: {e}", exc_info=True)
+        raise
+
     logger.info("=" * 60)
     logger.info("Afterburner started successfully!")
+    logger.info("Check system tray for icon")
     logger.info("=" * 60)
 
     # Запускаем приложение

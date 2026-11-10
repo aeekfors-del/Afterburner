@@ -7,7 +7,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-*.spec
+# *.spec (uncomment to ignore all)
+# main.spec
 
 # Virtual Environment
 venv/

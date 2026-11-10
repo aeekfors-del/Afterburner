@@ -22,7 +22,18 @@ logger = logging.getLogger("Afterburner.main")
 # Module-level reference for cleanup
 _collector = None
 
-SKIN_DIR = Path(__file__).parent / "Skins" / "MSICyborgRed"
+
+def _resource_path(relative_path: str) -> Path:
+    """Get absolute path to resource, works for dev and for PyInstaller bundle."""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = Path(sys._MEIPASS)
+    except Exception:
+        base_path = Path(__file__).parent
+    return base_path / relative_path
+
+
+SKIN_DIR = _resource_path("Skins/MSICyborgRed")
 
 # ============================================================
 # НАСТРОЙКИ ПОЗИЦИЙ
